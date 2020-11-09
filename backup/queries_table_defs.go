@@ -270,21 +270,30 @@ func GetDistributionPolicies(connectionPool *dbconn.DBConn) map[uint32]string {
 	var query string
 	if connectionPool.Version.Before("6") {
 		// This query is adapted from the addDistributedBy() function in pg_dump.c.
-		query = `
+		query = fmt.Sprintf(`
 		SELECT p.localoid AS oid,
 			'DISTRIBUTED BY (' || string_agg(quote_ident(a.attname) , ', ' ORDER BY index) || ')' AS value	
 		FROM (SELECT localoid, unnest(attrnums) AS attnum,
 				generate_series(1, array_upper(attrnums, 1)) AS index
-				FROM gp_distribution_policy WHERE attrnums IS NOT NULL) p
+				FROM gp_distribution_policy p
+				    JOIN pg_class c ON p.localoid = c.oid
+				    JOIN pg_namespace n ON c.relnamespace = n.oid
+				WHERE attrnums IS NOT NULL AND %s ) p
 			JOIN pg_attribute a ON (p.localoid, p.attnum) = (a.attrelid, a.attnum)
 		GROUP BY localoid
 		UNION ALL
 		SELECT p.localoid AS oid, 'DISTRIBUTED RANDOMLY' AS value
-		FROM gp_distribution_policy p WHERE attrnums IS NULL`
+		FROM gp_distribution_policy p 
+		    JOIN pg_class c ON p.localoid = c.oid
+		    JOIN pg_namespace n ON c.relnamespace = n.oid
+		WHERE attrnums IS NULL AND %[1]s`, relationAndSchemaFilterClause())
 	} else {
-		query = `
+		query = fmt.Sprintf(`
 		SELECT localoid AS oid, pg_catalog.pg_get_table_distributedby(localoid) AS value
-		FROM gp_distribution_policy`
+		FROM gp_distribution_policy p
+		    JOIN pg_class c ON p.localoid = c.oid
+		    JOIN pg_namespace n ON c.relnamespace = n.oid
+		WHERE %s`, relationAndSchemaFilterClause())
 	}
 	return selectAsOidToStringMap(connectionPool, query)
 }
@@ -312,6 +321,7 @@ func GetTableReplicaIdentity(connectionPool *dbconn.DBConn) map[uint32]string {
 
 func GetPartitionDetails(connectionPool *dbconn.DBConn) (map[uint32]string, map[uint32]string) {
 	gplog.Info("Getting partition definitions")
+
 	query := fmt.Sprintf(`
 	SELECT p.parrelid AS oid,
 		pg_get_partition_def(p.parrelid, true, true) AS definition,

@@ -253,21 +253,22 @@ type Attribute struct {
 func getCompositeTypeAttributes(connectionPool *dbconn.DBConn) map[uint32][]Attribute {
 	gplog.Verbose("Getting composite type attributes")
 
-	compositeAttributeQuery := `
+	compositeAttributeQuery := fmt.Sprintf(`
 	SELECT t.oid AS compositetypeoid,
 		quote_ident(a.attname) AS name,
 		pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
 		coalesce(quote_literal(d.description),'') AS comment
 	FROM pg_type t
+		JOIN pg_namespace n on n.oid=t.typnamespace AND %s 
 		JOIN pg_class c ON t.typrelid = c.oid
 		JOIN pg_attribute a ON t.typrelid = a.attrelid
 		LEFT JOIN pg_description d ON (d.objoid = a.attrelid AND d.classoid = 'pg_class'::regclass AND d.objsubid = a.attnum)
 	WHERE t.typtype = 'c'
 		AND c.relkind = 'c'
-	ORDER BY t.oid, a.attnum`
+	ORDER BY t.oid, a.attnum`, SchemaFilterClause("n"))
 
 	if connectionPool.Version.AtLeast("6") {
-		compositeAttributeQuery = `
+		compositeAttributeQuery = fmt.Sprintf(`
 		SELECT t.oid AS compositetypeoid,
 			quote_ident(a.attname) AS name,
 			pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
@@ -277,6 +278,7 @@ func getCompositeTypeAttributes(connectionPool *dbconn.DBConn) map[uint32][]Attr
 				THEN quote_ident(cn.nspname) || '.' || quote_ident(coll.collname) ELSE ''
 			END AS collation
 		FROM pg_type t
+			JOIN pg_namespace n on n.oid=t.typnamespace AND %s 
 			JOIN pg_class c ON t.typrelid = c.oid
 			JOIN pg_attribute a ON t.typrelid = a.attrelid
 			LEFT JOIN pg_description d ON (d.objoid = a.attrelid AND d.classoid = 'pg_class'::regclass AND d.objsubid = a.attnum)
@@ -285,7 +287,7 @@ func getCompositeTypeAttributes(connectionPool *dbconn.DBConn) map[uint32][]Attr
 			LEFT JOIN pg_namespace cn ON coll.collnamespace = cn.oid
 		WHERE t.typtype = 'c'
 			AND c.relkind = 'c'
-		ORDER BY t.oid, a.attnum`
+		ORDER BY t.oid, a.attnum`, SchemaFilterClause("n"))
 	}
 
 	results := make([]Attribute, 0)

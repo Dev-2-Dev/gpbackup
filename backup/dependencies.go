@@ -1,7 +1,6 @@
 package backup
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/greenplum-db/gp-common-go-libs/dbconn"
@@ -145,42 +144,55 @@ type UniqueID struct {
 
 // This function only returns dependencies that are referenced in the backup set
 func GetDependencies(connectionPool *dbconn.DBConn, backupSet map[UniqueID]bool) DependencyMap {
-	query := fmt.Sprintf(`SELECT
-	coalesce(id1.refclassid, d.classid) AS classid,
-	coalesce(id1.refobjid, d.objid) AS objid,
-	coalesce(id2.refclassid, d.refclassid) AS refclassid,
-	coalesce(id2.refobjid, d.refobjid) AS refobjid
-FROM pg_depend d
--- link implicit objects, using objid and refobjid, to the objects that created them
-LEFT JOIN pg_depend id1 ON (d.objid = id1.objid and d.classid = id1.classid and id1.deptype='i')
-LEFT JOIN pg_depend id2 ON (d.refobjid = id2.objid and d.refclassid = id2.classid and id2.deptype='i')
-WHERE d.classid != 0
-AND d.deptype != 'i'
-UNION
--- this converts function dependencies on array types to the underlying type
--- this is needed because pg_depend in 4.3.x doesn't have the info we need
-SELECT
-	d.classid,
-	d.objid,
-	d.refclassid,
-	t.typelem AS refobjid
-FROM pg_depend d
-JOIN pg_type t ON d.refobjid = t.oid
-WHERE d.classid = 'pg_proc'::regclass::oid
-AND typelem != 0`)
+	query := `
+	SELECT d.classid, d.objid, d.refclassid, d.refobjid, d.deptype 
+	FROM pg_depend d 
+	WHERE d.classid != 0 
+	UNION ALL
+	   -- this converts function dependencies on array types to the underlying type
+	   -- this is needed because pg_depend in 4.3.x doesn't have the info we need
+	SELECT d.classid, d.objid, d.refclassid, t.typelem AS refobjid, 'n' as deptype FROM pg_depend d
+	   JOIN pg_type t ON d.refobjid = t.oid
+	WHERE d.classid = 'pg_proc'::regclass::oid AND typelem != 0`
 
 	pgDependDeps := make([]struct {
 		ClassID    uint32
 		ObjID      uint32
 		RefClassID uint32
 		RefObjID   uint32
+		DepType    string
 	}, 0)
 
 	err := connectionPool.Select(&pgDependDeps, query)
 	gplog.FatalOnError(err)
 
+	owningMap := make(map[UniqueID]UniqueID)
+	for _, dep := range pgDependDeps {
+		if dep.DepType == "i" {
+			object := UniqueID{
+				ClassID: dep.ClassID,
+				Oid:     dep.ObjID,
+			}
+			referenceObject := UniqueID{
+				ClassID: dep.RefClassID,
+				Oid:     dep.RefObjID,
+			}
+
+			_, objInBackup := backupSet[object]
+			_, referenceInBackup := backupSet[referenceObject]
+			//If one of objects in backup maybe result edge will be in backup
+			if (object == referenceObject) || (!objInBackup && !referenceInBackup) {
+				continue
+			}
+			owningMap[object] = referenceObject
+		}
+	}
+
 	dependencyMap := make(DependencyMap)
 	for _, dep := range pgDependDeps {
+		if dep.DepType == "i" {
+			continue
+		}
 		object := UniqueID{
 			ClassID: dep.ClassID,
 			Oid:     dep.ObjID,
@@ -188,6 +200,13 @@ AND typelem != 0`)
 		referenceObject := UniqueID{
 			ClassID: dep.RefClassID,
 			Oid:     dep.RefObjID,
+		}
+
+		if owner, ok := owningMap[object]; ok {
+			object = owner
+		}
+		if owner, ok := owningMap[referenceObject]; ok {
+			referenceObject = owner
 		}
 
 		_, objInBackup := backupSet[object]

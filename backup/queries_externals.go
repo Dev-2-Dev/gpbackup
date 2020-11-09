@@ -157,7 +157,7 @@ func (pi PartitionInfo) GetMetadataEntry() (string, toc.MetadataEntry) {
 
 func GetExternalPartitionInfo(connectionPool *dbconn.DBConn) ([]PartitionInfo, map[uint32]PartitionInfo) {
 	results := make([]PartitionInfo, 0)
-	query := `
+	query := fmt.Sprintf(`
 	SELECT pr1.oid AS partitionruleoid,
 		pr1.parparentrule AS partitionparentruleoid,
 		cl.oid AS parentrelationoid,
@@ -176,11 +176,12 @@ func GetExternalPartitionInfo(connectionPool *dbconn.DBConn) ([]PartitionInfo, m
 		LEFT JOIN pg_class cl3 ON pr2.parchildrelid = cl3.oid
 		LEFT JOIN pg_exttable e ON e.reloid = pr1.parchildrelid
 	WHERE pp.paristemplate = false
+		AND %s
 		AND pp.parrelid = cl.oid
 		AND pr1.paroid = pp.oid
 		AND cl2.oid = pr1.parchildrelid
 		AND cl.relnamespace = n.oid
-		AND cl2.relnamespace = n2.oid`
+		AND cl2.relnamespace = n2.oid`, SchemaFilterClause("n"))
 	err := connectionPool.Select(&results, query)
 	gplog.FatalOnError(err)
 
